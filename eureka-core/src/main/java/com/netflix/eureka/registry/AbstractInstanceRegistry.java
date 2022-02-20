@@ -220,6 +220,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                 // 服务首次注册
                 // The lease does not exist and hence it is a new registration
                 synchronized (lock) {
+                    // 更新期望1分钟收到的最小的心跳次数
                     if (this.expectedNumberOfRenewsPerMin > 0) {
                         // Since the client wants to cancel it, reduce the threshold
                         // (1
@@ -422,6 +423,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                 instanceInfo.setStatusWithoutDirty(overriddenInstanceStatus);
             }
         }
+        // 每次心跳时，都会讲这个参数+1 记录每一分钟的实际的心跳次数
         renewsLastMin.increment();
 
         // 核心逻辑
@@ -629,7 +631,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         logger.debug("Running the evict task");
 
 
-        // 是否允许主动删除掉故障的服务实例 -> 自我保护机制 TODO
+        // 是否允许主动删除掉故障的服务实例 -> 自我保护机制
         if (!isLeaseExpirationEnabled()) {
             logger.debug("DS: lease expiration is currently disabled.");
             return;
@@ -647,7 +649,9 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
             if (leaseMap != null) {
                 for (Entry<String, Lease<InstanceInfo>> leaseEntry : leaseMap.entrySet()) {
                     Lease<InstanceInfo> lease = leaseEntry.getValue();
+                    // 判断租约是否过期，如果一个服务实例上一次的心跳时间到现在位置 超过了 90*2 =180s的话，才会认为这个服务实例故障了
                     if (lease.isExpired(additionalLeaseMs) && lease.getHolder() != null) {
+                        // 如果过期了，添加到过期租约的list中
                         expiredLeases.add(lease);
                     }
                 }
@@ -656,25 +660,35 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
 
         // To compensate for GC pauses or drifting local time, we need to use current registry size as a base for
         // triggering self-preservation. Without that we would wipe out full registry.
+
+        // 不能一次性摘除过多的服务实例
+        // 服务实例个数 20
         int registrySize = (int) getLocalRegistrySize();
+        // 服务实例个数*0.85 = 17
         int registrySizeThreshold = (int) (registrySize * serverConfig.getRenewalPercentThreshold());
+        // 最多可摘除的服务实例个数  = 3
         int evictionLimit = registrySize - registrySizeThreshold;
 
+        // 最终真正可摘除的服务实例
+        // expiredLeases.size() 假设 = 6  toEvict = 3
         int toEvict = Math.min(expiredLeases.size(), evictionLimit);
         if (toEvict > 0) {
             logger.info("Evicting {} items (expired={}, evictionLimit={})", toEvict, expiredLeases.size(), evictionLimit);
 
+            // 随机摘取3个服务实例
             Random random = new Random(System.currentTimeMillis());
             for (int i = 0; i < toEvict; i++) {
                 // Pick a random item (Knuth shuffle algorithm)
                 int next = i + random.nextInt(expiredLeases.size() - i);
                 Collections.swap(expiredLeases, i, next);
+                // 随机挑选出一个服务实例
                 Lease<InstanceInfo> lease = expiredLeases.get(i);
 
                 String appName = lease.getHolder().getAppName();
                 String id = lease.getHolder().getId();
                 EXPIRED.increment();
                 logger.warn("DS: Registry: expired lease for {}/{}", appName, id);
+                // 对这个随机挑选出来的服务实例，调用internalCancel方法摘除
                 internalCancel(appName, id, false);
             }
         }

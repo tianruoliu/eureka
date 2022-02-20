@@ -50,7 +50,7 @@ public class Lease<T> {
         holder = r;
         registrationTimestamp = System.currentTimeMillis();
         lastUpdateTimestamp = registrationTimestamp;
-        // ???
+        // 默认90秒
         duration = (durationInSecs * 1000);
 
     }
@@ -62,6 +62,8 @@ public class Lease<T> {
      */
     public void renew() {
         // 续约
+        // 发送心跳，就是刷新lastUpdateTimestamp
+        // duration默认是90秒
         lastUpdateTimestamp = System.currentTimeMillis() + duration;
 
     }
@@ -111,6 +113,8 @@ public class Lease<T> {
      * @param additionalLeaseMs any additional lease time to add to the lease evaluation in ms.
      */
     public boolean isExpired(long additionalLeaseMs) {
+        // 等于是90*2=180  3分钟没续约才会认为服务实例下线
+        // 当前时间是否大于了 上一次心跳时间 + 90s + 补偿时间（compensationTime）
         return (evictionTimestamp > 0 || System.currentTimeMillis() > (lastUpdateTimestamp + duration + additionalLeaseMs));
     }
 

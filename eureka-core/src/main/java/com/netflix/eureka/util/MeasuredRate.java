@@ -48,12 +48,17 @@ public class MeasuredRate {
 
     public synchronized void start() {
         if (!isActive) {
+            // 每分钟执行一次
             timer.schedule(new TimerTask() {
 
                 @Override
                 public void run() {
                     try {
                         // Zero out the current bucket.
+                        // 每分钟会将currentBucket的值设置到lastBucket中
+                        // 并且currentBucket要清零
+                        // currentBucket用来写
+                        // lastBucket用来读
                         lastBucket.set(currentBucket.getAndSet(0));
                     } catch (Throwable e) {
                         logger.error("Cannot reset the Measured Rate", e);

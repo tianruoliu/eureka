@@ -190,6 +190,7 @@ public class EurekaBootStrap implements ServletContextListener {
             );
         }
 
+        // Eureka Server 集群
         PeerEurekaNodes peerEurekaNodes = getPeerEurekaNodes(
                 registry,
                 eurekaServerConfig,
@@ -212,6 +213,7 @@ public class EurekaBootStrap implements ServletContextListener {
         logger.info("Initialized server context");
 
         // Copy registry from neighboring eureka node
+        // 从其他注册中心拉取的服务实例数量
         int registryCount = registry.syncUp();
         // 自动检查服务实例是否故障宕机
         registry.openForTraffic(applicationInfoManager, registryCount);
