@@ -204,7 +204,7 @@ public class DefaultEurekaClientConfig implements EurekaClientConfig {
                 null).get();
     }
 
-    /*
+    /**
      * (non-Javadoc)
      *
      * @see

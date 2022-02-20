@@ -147,6 +147,7 @@ public class ResponseCacheImpl implements ResponseCache {
                                     Key cloneWithNoRegions = key.cloneWithoutRegions();
                                     regionSpecificKeys.put(cloneWithNoRegions, key);
                                 }
+                                // 从注册表中读取
                                 Value value = generatePayload(key);
                                 return value;
                             }
@@ -345,11 +346,14 @@ public class ResponseCacheImpl implements ResponseCache {
         Value payload = null;
         try {
             if (useReadOnlyCache) {
+                // 先读只读缓存
                 final Value currentPayload = readOnlyCacheMap.get(key);
                 if (currentPayload != null) {
                     payload = currentPayload;
                 } else {
+                    // 从读写缓存中获取
                     payload = readWriteCacheMap.get(key);
+                    // 更新只读换出
                     readOnlyCacheMap.put(key, payload);
                 }
             } else {

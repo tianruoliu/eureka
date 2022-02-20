@@ -16,30 +16,6 @@
 
 package com.netflix.eureka.registry;
 
-import javax.annotation.Nullable;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Random;
-import java.util.Set;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-
 import com.google.common.cache.CacheBuilder;
 import com.netflix.appinfo.InstanceInfo;
 import com.netflix.appinfo.InstanceInfo.ActionType;
@@ -58,6 +34,20 @@ import com.netflix.servo.annotations.DataSourceType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.util.*;
+import java.util.Map.Entry;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
 import static com.netflix.eureka.util.EurekaMonitors.*;
 
 /**
@@ -70,15 +60,17 @@ import static com.netflix.eureka.util.EurekaMonitors.*;
  * </p>
  *
  * @author Karthik Ranganathan
- *
  */
 public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     private static final Logger logger = LoggerFactory.getLogger(AbstractInstanceRegistry.class);
 
     private static final String[] EMPTY_STR_ARRAY = new String[0];
+    /**
+     * 注册表
+     */
     private final ConcurrentHashMap<String, Map<String, Lease<InstanceInfo>>> registry
-            = new ConcurrentHashMap<String, Map<String, Lease<InstanceInfo>>>();
-    protected Map<String, RemoteRegionRegistry> regionNameVSRemoteRegistry = new HashMap<String, RemoteRegionRegistry>();
+            = new ConcurrentHashMap<>();
+    protected Map<String, RemoteRegionRegistry> regionNameVSRemoteRegistry = new HashMap<>();
     protected final ConcurrentMap<String, InstanceStatus> overriddenInstanceStatusMap = CacheBuilder
             .newBuilder().initialCapacity(500)
             .expireAfterAccess(1, TimeUnit.HOURS)
@@ -189,18 +181,26 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      *
      * @see com.netflix.eureka.lease.LeaseManager#register(java.lang.Object, int, boolean)
      */
+    @Override
     public void register(InstanceInfo registrant, int leaseDuration, boolean isReplication) {
         try {
+            // 读锁，比的线程可以读，但不能写
             read.lock();
+            // registry : 注册表Map
             Map<String, Lease<InstanceInfo>> gMap = registry.get(registrant.getAppName());
+            // 计数器
             REGISTER.increment(isReplication);
+
+            // 第一次注册 gMap为空 需要创建一个新的ConcurrentHashMap
             if (gMap == null) {
-                final ConcurrentHashMap<String, Lease<InstanceInfo>> gNewMap = new ConcurrentHashMap<String, Lease<InstanceInfo>>();
+                final ConcurrentHashMap<String, Lease<InstanceInfo>> gNewMap = new ConcurrentHashMap<>();
+                // key： 服务名称
                 gMap = registry.putIfAbsent(registrant.getAppName(), gNewMap);
                 if (gMap == null) {
                     gMap = gNewMap;
                 }
             }
+            // 通过instanceId 从gMap中获取服务实例对应的租约
             Lease<InstanceInfo> existingLease = gMap.get(registrant.getId());
             // Retain the last dirty timestamp without overwriting it, if there is already a lease
             if (existingLease != null && (existingLease.getHolder() != null)) {
@@ -217,6 +217,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                     registrant = existingLease.getHolder();
                 }
             } else {
+                // 服务首次注册
                 // The lease does not exist and hence it is a new registration
                 synchronized (lock) {
                     if (this.expectedNumberOfRenewsPerMin > 0) {
@@ -230,20 +231,23 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                 }
                 logger.debug("No previous lease information found; it is new registration");
             }
-            Lease<InstanceInfo> lease = new Lease<InstanceInfo>(registrant, leaseDuration);
+
+            // 将InstanceInfo封装成Lease对象
+            Lease<InstanceInfo> lease = new Lease<>(registrant, leaseDuration);
             if (existingLease != null) {
                 lease.setServiceUpTimestamp(existingLease.getServiceUpTimestamp());
             }
+            // 将instanceId Lease信息 放入gMap中
             gMap.put(registrant.getId(), lease);
             synchronized (recentRegisteredQueue) {
-                recentRegisteredQueue.add(new Pair<Long, String>(
+                recentRegisteredQueue.add(new Pair<>(
                         System.currentTimeMillis(),
                         registrant.getAppName() + "(" + registrant.getId() + ")"));
             }
             // This is where the initial state transfer of overridden status happens
             if (!InstanceStatus.UNKNOWN.equals(registrant.getOverriddenStatus())) {
                 logger.debug("Found overridden status {} for instance {}. Checking to see if needs to be add to the "
-                                + "overrides", registrant.getOverriddenStatus(), registrant.getId());
+                        + "overrides", registrant.getOverriddenStatus(), registrant.getId());
                 if (!overriddenInstanceStatusMap.containsKey(registrant.getId())) {
                     logger.info("Not found overridden id {} and hence adding it", registrant.getId());
                     overriddenInstanceStatusMap.put(registrant.getId(), registrant.getOverriddenStatus());
@@ -266,6 +270,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
             registrant.setActionType(ActionType.ADDED);
             recentlyChangedQueue.add(new RecentlyChangedItem(lease));
             registrant.setLastUpdatedTimestamp();
+            // 失效缓存
             invalidateCache(registrant.getAppName(), registrant.getVIPAddress(), registrant.getSecureVipAddress());
             logger.info("Registered instance {}/{} with status {} (replication={})",
                     registrant.getAppName(), registrant.getId(), registrant.getStatus(), isReplication);
@@ -282,8 +287,8 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      * server to remove the instance from traffic.
      * </p>
      *
-     * @param appName the application name of the application.
-     * @param id the unique identifier of the instance.
+     * @param appName       the application name of the application.
+     * @param id            the unique identifier of the instance.
      * @param isReplication true if this is a replication event from other nodes, false
      *                      otherwise.
      * @return true if the instance was removed from the {@link AbstractInstanceRegistry} successfully, false otherwise.
@@ -294,22 +299,31 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
+     * 服务实例摘除
      * {@link #cancel(String, String, boolean)} method is overridden by {@link PeerAwareInstanceRegistry}, so each
      * cancel request is replicated to the peers. This is however not desired for expires which would be counted
      * in the remote peers as valid cancellations, so self preservation mode would not kick-in.
      */
     protected boolean internalCancel(String appName, String id, boolean isReplication) {
+
         try {
             read.lock();
+
+            // 统计信息
             CANCEL.increment(isReplication);
+
             Map<String, Lease<InstanceInfo>> gMap = registry.get(appName);
             Lease<InstanceInfo> leaseToCancel = null;
             if (gMap != null) {
+                // 注册表中移除服务实例信息
                 leaseToCancel = gMap.remove(id);
             }
+
+            // 将服务实例加入最近下线的queue中
             synchronized (recentCanceledQueue) {
-                recentCanceledQueue.add(new Pair<Long, String>(System.currentTimeMillis(), appName + "(" + id + ")"));
+                recentCanceledQueue.add(new Pair<>(System.currentTimeMillis(), appName + "(" + id + ")"));
             }
+
             InstanceStatus instanceStatus = overriddenInstanceStatusMap.remove(id);
             if (instanceStatus != null) {
                 logger.debug("Removed instance id {} from the overridden map which has value {}", id, instanceStatus.name());
@@ -318,22 +332,38 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
                 CANCEL_NOT_FOUND.increment(isReplication);
                 logger.warn("DS: Registry: cancel failed because Lease is not registered for: {}/{}", appName, id);
                 return false;
-            } else {
-                leaseToCancel.cancel();
-                InstanceInfo instanceInfo = leaseToCancel.getHolder();
-                String vip = null;
-                String svip = null;
-                if (instanceInfo != null) {
-                    instanceInfo.setActionType(ActionType.DELETED);
-                    recentlyChangedQueue.add(new RecentlyChangedItem(leaseToCancel));
-                    instanceInfo.setLastUpdatedTimestamp();
-                    vip = instanceInfo.getVIPAddress();
-                    svip = instanceInfo.getSecureVipAddress();
-                }
-                invalidateCache(appName, vip, svip);
-                logger.info("Cancelled instance {}/{} (replication={})", appName, id, isReplication);
-                return true;
             }
+
+
+//            else {
+            // 保存服务实例下线的时间戳
+            leaseToCancel.cancel();
+            // 获取租约信息对应的服务实例
+            InstanceInfo instanceInfo = leaseToCancel.getHolder();
+
+            String vip = null;
+            String svip = null;
+
+            if (instanceInfo != null) {
+                // 设置服务实例 ActionType  DELETED
+                instanceInfo.setActionType(ActionType.DELETED);
+                // 将服务实例信息放到最近改变的队列中
+                recentlyChangedQueue.add(new RecentlyChangedItem(leaseToCancel));
+                // 设置服务实例的lastUpdatedTimeStamp：最近一次变更的时间戳  类比阶段一的gmtModified
+                instanceInfo.setLastUpdatedTimestamp();
+
+                // 非核心逻辑
+                vip = instanceInfo.getVIPAddress();
+                svip = instanceInfo.getSecureVipAddress();
+                // 服务的注册、下线、故障摘除 都会代表这个服务实例变化了 都会将自己放入到最近改变队列中
+                // 最近改变队列，只会保留最近3分钟的服务实例
+                // 因此eureka client拉取增量注册表时，其实就在拉取最近3分钟有变化的服务实例的注册表
+            }
+            // 服务实例变化，清除掉注册表缓存，从readWriteCacheMap中清理掉
+            invalidateCache(appName, vip, svip);
+            logger.info("Cancelled instance {}/{} (replication={})", appName, id, isReplication);
+            return true;
+//            }
         } finally {
             read.unlock();
         }
@@ -343,10 +373,17 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      * Marks the given instance of the given app name as renewed, and also marks whether it originated from
      * replication.
      *
+     * @param appName       服务名称
+     * @param id            实例id
+     * @param isReplication
      * @see com.netflix.eureka.lease.LeaseManager#renew(java.lang.String, java.lang.String, boolean)
      */
+    @Override
     public boolean renew(String appName, String id, boolean isReplication) {
+        // 实际去处理心跳请求
+        // 服务续约次数统计
         RENEW.increment(isReplication);
+        // 服务对应的服务实例信息
         Map<String, Lease<InstanceInfo>> gMap = registry.get(appName);
         Lease<InstanceInfo> leaseToRenew = null;
         if (gMap != null) {
@@ -356,45 +393,51 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
             RENEW_NOT_FOUND.increment(isReplication);
             logger.warn("DS: Registry: lease doesn't exist, registering resource: {} - {}", appName, id);
             return false;
-        } else {
-            InstanceInfo instanceInfo = leaseToRenew.getHolder();
-            if (instanceInfo != null) {
-                // touchASGCache(instanceInfo.getASGName());
-                InstanceStatus overriddenInstanceStatus = this.getOverriddenInstanceStatus(
-                        instanceInfo, leaseToRenew, isReplication);
-                if (overriddenInstanceStatus == InstanceStatus.UNKNOWN) {
-                    logger.info("Instance status UNKNOWN possibly due to deleted override for instance {}"
-                            + "; re-register required", instanceInfo.getId());
-                    RENEW_NOT_FOUND.increment(isReplication);
-                    return false;
-                }
-                if (!instanceInfo.getStatus().equals(overriddenInstanceStatus)) {
-                    Object[] args = {
-                            instanceInfo.getStatus().name(),
-                            instanceInfo.getOverriddenStatus().name(),
-                            instanceInfo.getId()
-                    };
-                    logger.info(
-                            "The instance status {} is different from overridden instance status {} for instance {}. "
-                                    + "Hence setting the status to overridden status", args);
-                    instanceInfo.setStatusWithoutDirty(overriddenInstanceStatus);
-                }
-            }
-            renewsLastMin.increment();
-            leaseToRenew.renew();
-            return true;
         }
+        //else {
+        // 一般走这个逻辑
+        // 获取当前实例信息
+        InstanceInfo instanceInfo = leaseToRenew.getHolder();
+
+        // 非核心逻辑 可单独抽成一个方法
+        if (instanceInfo != null) {
+            // touchASGCache(instanceInfo.getASGName());
+            InstanceStatus overriddenInstanceStatus = this.getOverriddenInstanceStatus(
+                    instanceInfo, leaseToRenew, isReplication);
+            if (overriddenInstanceStatus == InstanceStatus.UNKNOWN) {
+                logger.info("Instance status UNKNOWN possibly due to deleted override for instance {}"
+                        + "; re-register required", instanceInfo.getId());
+                RENEW_NOT_FOUND.increment(isReplication);
+                return false;
+            }
+            if (!instanceInfo.getStatus().equals(overriddenInstanceStatus)) {
+                Object[] args = {
+                        instanceInfo.getStatus().name(),
+                        instanceInfo.getOverriddenStatus().name(),
+                        instanceInfo.getId()
+                };
+                logger.info(
+                        "The instance status {} is different from overridden instance status {} for instance {}. "
+                                + "Hence setting the status to overridden status", args);
+                instanceInfo.setStatusWithoutDirty(overriddenInstanceStatus);
+            }
+        }
+        renewsLastMin.increment();
+
+        // 核心逻辑
+        leaseToRenew.renew();
+        return true;
+//        }
     }
 
     /**
+     * @param id               the unique identifier of the instance.
+     * @param overriddenStatus Overridden status if any.
      * @deprecated this is expensive, try not to use. See if you can use
      * {@link #storeOverriddenStatusIfRequired(String, String, InstanceStatus)} instead.
-     *
+     * <p>
      * Stores overridden status if it is not already there. This happens during
      * a reconciliation process during renewal requests.
-     *
-     * @param id the unique identifier of the instance.
-     * @param overriddenStatus Overridden status if any.
      */
     @Deprecated
     @Override
@@ -423,8 +466,8 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      * Stores overridden status if it is not already there. This happens during
      * a reconciliation process during renewal requests.
      *
-     * @param appName the application name of the instance.
-     * @param id the unique identifier of the instance.
+     * @param appName          the application name of the instance.
+     * @param id               the unique identifier of the instance.
      * @param overriddenStatus overridden status if any.
      */
     @Override
@@ -449,12 +492,12 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      * between {@link InstanceStatus#OUT_OF_SERVICE} and
      * {@link InstanceStatus#UP} to put the instance in and out of traffic.
      *
-     * @param appName the application name of the instance.
-     * @param id the unique identifier of the instance.
-     * @param newStatus the new {@link InstanceStatus}.
+     * @param appName            the application name of the instance.
+     * @param id                 the unique identifier of the instance.
+     * @param newStatus          the new {@link InstanceStatus}.
      * @param lastDirtyTimestamp last timestamp when this instance information was updated.
-     * @param isReplication true if this is a replication event from other nodes, false
-     *                      otherwise.
+     * @param isReplication      true if this is a replication event from other nodes, false
+     *                           otherwise.
      * @return true if the status was successfully updated, false otherwise.
      */
     @Override
@@ -514,12 +557,12 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     /**
      * Removes status override for a give instance.
      *
-     * @param appName the application name of the instance.
-     * @param id the unique identifier of the instance.
-     * @param newStatus the new {@link InstanceStatus}.
+     * @param appName            the application name of the instance.
+     * @param id                 the unique identifier of the instance.
+     * @param newStatus          the new {@link InstanceStatus}.
      * @param lastDirtyTimestamp last timestamp when this instance information was updated.
-     * @param isReplication true if this is a replication event from other nodes, false
-     *                      otherwise.
+     * @param isReplication      true if this is a replication event from other nodes, false
+     *                           otherwise.
      * @return true if the status was successfully updated, false otherwise.
      */
     @Override
@@ -579,12 +622,14 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      */
     @Override
     public void evict() {
-        evict(0l);
+        evict(0L);
     }
 
     public void evict(long additionalLeaseMs) {
         logger.debug("Running the evict task");
 
+
+        // 是否允许主动删除掉故障的服务实例 -> 自我保护机制 TODO
         if (!isLeaseExpirationEnabled()) {
             logger.debug("DS: lease expiration is currently disabled.");
             return;
@@ -594,7 +639,10 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         // if we do not that, we might wipe out whole apps before self preservation kicks in. By randomizing it,
         // the impact should be evenly distributed across all applications.
         List<Lease<InstanceInfo>> expiredLeases = new ArrayList<>();
+
+        // 遍历注册表
         for (Entry<String, Map<String, Lease<InstanceInfo>>> groupEntry : registry.entrySet()) {
+            // 遍历服务 对应的服务实例租约 map
             Map<String, Lease<InstanceInfo>> leaseMap = groupEntry.getValue();
             if (leaseMap != null) {
                 for (Entry<String, Lease<InstanceInfo>> leaseEntry : leaseMap.entrySet()) {
@@ -639,7 +687,6 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      *
      * @param appName the application name of the application
      * @return the application
-     *
      * @see com.netflix.discovery.shared.LookupService#getApplication(java.lang.String)
      */
     @Override
@@ -651,7 +698,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     /**
      * Get application information.
      *
-     * @param appName The name of the application
+     * @param appName             The name of the application
      * @param includeRemoteRegion true, if we need to include applications from remote regions
      *                            as indicated by the region {@link URL} by this property
      *                            {@link EurekaServerConfig#getRemoteRegionUrls()}, false otherwise
@@ -685,7 +732,6 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      * Get all applications in this instance registry, falling back to other regions if allowed in the Eureka config.
      *
      * @return the list of all known applications
-     *
      * @see com.netflix.discovery.shared.LookupService#getApplications()
      */
     public Applications getApplications() {
@@ -727,7 +773,6 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      * @param remoteRegions The remote regions for which the instances are to be queried. The instances may be limited
      *                      by a whitelist as explained above. If <code>null</code> or empty no remote regions are
      *                      included.
-     *
      * @return The applications with instances from the passed remote regions as well as local region. The instances
      * from remote regions can be only for certain whitelisted apps as explained above.
      */
@@ -809,7 +854,6 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      *                            as indicated by the region {@link URL} by this property
      *                            {@link EurekaServerConfig#getRemoteRegionUrls()}, false otherwise
      * @return applications
-     *
      * @deprecated Use {@link #getApplicationsFromMultipleRegions(String[])} instead. This method has a flawed behavior
      * of transparently falling back to a remote region if no instances for an app is available locally. The new
      * behavior is to explicitly specify if you need a remote region.
@@ -925,7 +969,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     /**
      * Gets the application delta also including instances from the passed remote regions, with the instances from the
      * local region. <br/>
-     *
+     * <p>
      * The remote regions from where the instances will be chosen can further be restricted if this application does not
      * appear in the whitelist specified for the region as returned by
      * {@link EurekaServerConfig#getRemoteRegionAppWhitelist(String)} for a region. In case, there is no whitelist
@@ -935,7 +979,6 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      * @param remoteRegions The remote regions for which the instances are to be queried. The instances may be limited
      *                      by a whitelist as explained above. If <code>null</code> all remote regions are included.
      *                      If empty list then no remote region is included.
-     *
      * @return The delta with instances from the passed remote regions as well as local region. The instances
      * from remote regions can be further be restricted as explained above. <code>null</code> if the application does
      * not exist locally or in remote regions.
@@ -1012,7 +1055,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      * Gets the {@link InstanceInfo} information.
      *
      * @param appName the application name for which the information is requested.
-     * @param id the unique identifier of the instance.
+     * @param id      the unique identifier of the instance.
      * @return the information about the instance.
      */
     @Override
@@ -1023,8 +1066,8 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     /**
      * Gets the {@link InstanceInfo} information.
      *
-     * @param appName the application name for which the information is requested.
-     * @param id the unique identifier of the instance.
+     * @param appName              the application name for which the information is requested.
+     * @param id                   the unique identifier of the instance.
      * @param includeRemoteRegions true, if we need to include applications from remote regions
      *                             as indicated by the region {@link URL} by this property
      *                             {@link EurekaServerConfig#getRemoteRegionUrls()}, false otherwise
@@ -1052,11 +1095,10 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
-     * @deprecated Try {@link #getInstanceByAppAndId(String, String)} instead.
-     *
-     * Get all instances by ID, including automatically asking other regions if the ID is unknown.
-     *
      * @see com.netflix.discovery.shared.LookupService#getInstancesById(String)
+     * @deprecated Try {@link #getInstanceByAppAndId(String, String)} instead.
+     * <p>
+     * Get all instances by ID, including automatically asking other regions if the ID is unknown.
      */
     @Deprecated
     public List<InstanceInfo> getInstancesById(String id) {
@@ -1064,22 +1106,21 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     }
 
     /**
-     * @deprecated Try {@link #getInstanceByAppAndId(String, String, boolean)} instead.
-     *
-     * Get the list of instances by its unique id.
-     *
-     * @param id the unique id of the instance
+     * @param id                   the unique id of the instance
      * @param includeRemoteRegions true, if we need to include applications from remote regions
      *                             as indicated by the region {@link URL} by this property
      *                             {@link EurekaServerConfig#getRemoteRegionUrls()}, false otherwise
      * @return list of InstanceInfo objects.
+     * @deprecated Try {@link #getInstanceByAppAndId(String, String, boolean)} instead.
+     * <p>
+     * Get the list of instances by its unique id.
      */
     @Deprecated
     public List<InstanceInfo> getInstancesById(String id, boolean includeRemoteRegions) {
         List<InstanceInfo> list = new ArrayList<InstanceInfo>();
 
         for (Iterator<Entry<String, Map<String, Lease<InstanceInfo>>>> iter =
-                     registry.entrySet().iterator(); iter.hasNext(); ) {
+             registry.entrySet().iterator(); iter.hasNext(); ) {
 
             Map<String, Lease<InstanceInfo>> leaseMap = iter.next().getValue();
             if (leaseMap != null) {
@@ -1152,7 +1193,7 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
      * Gets the threshold for the renewals per minute.
      *
      * @return the integer representing the threshold for the renewals per
-     *         minute.
+     * minute.
      */
     @com.netflix.servo.annotations.Monitor(name = "numOfRenewsPerMinThreshold", type = DataSourceType.GAUGE)
     @Override
@@ -1260,21 +1301,34 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
         }
 
         /**
+         * 计算补偿时间，该补偿时间定义为自前一次迭代以来执行该任务的实际时间与配置的执行时间。
+         * 这对于时间的变化(例如，由于时钟倾斜或gc)导致实际的回收任务按照配置的周期比预期的时间执行得晚的情况非常有用。
+         * <p>
          * compute a compensation time defined as the actual time this task was executed since the prev iteration,
          * vs the configured amount of time for execution. This is useful for cases where changes in time (due to
          * clock skew or gc for example) causes the actual eviction task to execute later than the desired time
          * according to the configured cycle.
          */
         long getCompensationTimeMs() {
+            // 问题：JVM GC卡顿  linux本地时钟
+
+            // 获取当前时间
             long currNanos = getCurrentTimeNano();
+            // 1. 获取上一次执行时间
+            // 2. 将当前时间 设置到lastExecutionNanosRef中
             long lastNanos = lastExecutionNanosRef.getAndSet(currNanos);
-            if (lastNanos == 0l) {
-                return 0l;
+            if (lastNanos == 0L) {
+                return 0L;
             }
 
+            // 算出时间间隔
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(currNanos - lastNanos);
+
+            // serverConfig.getEvictionIntervalTimerInMs() 60秒
             long compensationTime = elapsedMs - serverConfig.getEvictionIntervalTimerInMs();
-            return compensationTime <= 0l ? 0l : compensationTime;
+
+
+            return compensationTime <= 0L ? 0L : compensationTime;
         }
 
         long getCurrentTimeNano() {  // for testing
@@ -1315,8 +1369,8 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
     protected abstract InstanceStatusOverrideRule getInstanceInfoOverrideRule();
 
     protected InstanceInfo.InstanceStatus getOverriddenInstanceStatus(InstanceInfo r,
-                                                                    Lease<InstanceInfo> existingLease,
-                                                                    boolean isReplication) {
+                                                                      Lease<InstanceInfo> existingLease,
+                                                                      boolean isReplication) {
         InstanceStatusOverrideRule rule = getInstanceInfoOverrideRule();
         logger.debug("Processing override status using rule: {}", rule);
         return rule.apply(r, existingLease, isReplication).status();
@@ -1329,8 +1383,11 @@ public abstract class AbstractInstanceRegistry implements InstanceRegistry {
             public void run() {
                 Iterator<RecentlyChangedItem> it = recentlyChangedQueue.iterator();
                 while (it.hasNext()) {
+                    //  serverConfig.getRetentionTimeInMSInDeltaQueue()  3分钟
+                    // 这个记录进入队列超过3分钟
                     if (it.next().getLastUpdateTime() <
                             System.currentTimeMillis() - serverConfig.getRetentionTimeInMSInDeltaQueue()) {
+                        // 将记录从队列中移除
                         it.remove();
                     } else {
                         break;

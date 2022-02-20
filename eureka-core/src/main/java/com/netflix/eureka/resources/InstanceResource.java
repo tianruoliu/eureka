@@ -16,13 +16,15 @@
 
 package com.netflix.eureka.resources;
 
-import javax.ws.rs.DELETE;
-import javax.ws.rs.GET;
-import javax.ws.rs.HeaderParam;
-import javax.ws.rs.PUT;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.QueryParam;
+import com.netflix.appinfo.InstanceInfo;
+import com.netflix.appinfo.InstanceInfo.InstanceStatus;
+import com.netflix.eureka.EurekaServerConfig;
+import com.netflix.eureka.cluster.PeerEurekaNode;
+import com.netflix.eureka.registry.PeerAwareInstanceRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.ws.rs.*;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
@@ -35,19 +37,10 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.netflix.appinfo.InstanceInfo;
-import com.netflix.appinfo.InstanceInfo.InstanceStatus;
-import com.netflix.eureka.EurekaServerConfig;
-import com.netflix.eureka.registry.PeerAwareInstanceRegistry;
-import com.netflix.eureka.cluster.PeerEurekaNode;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 /**
  * A <em>jersey</em> resource that handles operations for a particular instance.
  *
  * @author Karthik Ranganathan, Greg Kim
- *
  */
 @Produces({"application/xml", "application/json"})
 public class InstanceResource {
@@ -72,7 +65,7 @@ public class InstanceResource {
      * {@link InstanceInfo}.
      *
      * @return response containing information about the the instance's
-     *         {@link InstanceInfo}.
+     * {@link InstanceInfo}.
      */
     @GET
     public Response getInstanceInfo() {
@@ -90,17 +83,13 @@ public class InstanceResource {
     /**
      * A put request for renewing lease from a client instance.
      *
-     * @param isReplication
-     *            a header parameter containing information whether this is
-     *            replicated from other nodes.
-     * @param overriddenStatus
-     *            overridden status if any.
-     * @param status
-     *            the {@link InstanceStatus} of the instance.
-     * @param lastDirtyTimestamp
-     *            last timestamp when this instance information was updated.
+     * @param isReplication      a header parameter containing information whether this is
+     *                           replicated from other nodes.
+     * @param overriddenStatus   overridden status if any.
+     * @param status             the {@link InstanceStatus} of the instance.
+     * @param lastDirtyTimestamp last timestamp when this instance information was updated.
      * @return response indicating whether the operation was a success or
-     *         failure.
+     * failure.
      */
     @PUT
     public Response renewLease(
@@ -109,6 +98,7 @@ public class InstanceResource {
             @QueryParam("status") String status,
             @QueryParam("lastDirtyTimestamp") String lastDirtyTimestamp) {
         boolean isFromReplicaNode = "true".equals(isReplication);
+        // 续约
         boolean isSuccess = registry.renew(app.getName(), id, isFromReplicaNode);
 
         // Not found in the registry, immediately ask for a register
@@ -145,15 +135,12 @@ public class InstanceResource {
      * receiving traffic.
      * </p>
      *
-     * @param newStatus
-     *            the new status of the instance.
-     * @param isReplication
-     *            a header parameter containing information whether this is
-     *            replicated from other nodes.
-     * @param lastDirtyTimestamp
-     *            last timestamp when this instance information was updated.
+     * @param newStatus          the new status of the instance.
+     * @param isReplication      a header parameter containing information whether this is
+     *                           replicated from other nodes.
+     * @param lastDirtyTimestamp last timestamp when this instance information was updated.
      * @return response indicating whether the operation was a success or
-     *         failure.
+     * failure.
      */
     @PUT
     @Path("status")
@@ -190,13 +177,11 @@ public class InstanceResource {
      * Removes status override for an instance, set with
      * {@link #statusUpdate(String, String, String)}.
      *
-     * @param isReplication
-     *            a header parameter containing information whether this is
-     *            replicated from other nodes.
-     * @param lastDirtyTimestamp
-     *            last timestamp when this instance information was updated.
+     * @param isReplication      a header parameter containing information whether this is
+     *                           replicated from other nodes.
+     * @param lastDirtyTimestamp last timestamp when this instance information was updated.
      * @return response indicating whether the operation was a success or
-     *         failure.
+     * failure.
      */
     @DELETE
     @Path("status")
@@ -230,9 +215,10 @@ public class InstanceResource {
     /**
      * Updates user-specific metadata information. If the key is already available, its value will be overwritten.
      * If not, it will be added.
+     *
      * @param uriInfo - URI information generated by jersey.
      * @return response indicating whether the operation was a success or
-     *         failure.
+     * failure.
      */
     @PUT
     @Path("metadata")
@@ -270,15 +256,15 @@ public class InstanceResource {
     /**
      * Handles cancellation of leases for this particular instance.
      *
-     * @param isReplication
-     *            a header parameter containing information whether this is
-     *            replicated from other nodes.
+     * @param isReplication a header parameter containing information whether this is
+     *                      replicated from other nodes.
      * @return response indicating whether the operation was a success or
-     *         failure.
+     * failure.
      */
     @DELETE
     public Response cancelLease(
             @HeaderParam(PeerEurekaNode.HEADER_REPLICATION) String isReplication) {
+        // 服务实例下线
         boolean isSuccess = registry.cancel(app.getName(), id,
                 "true".equals(isReplication));
 

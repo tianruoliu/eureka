@@ -50,6 +50,7 @@ public class Lease<T> {
         holder = r;
         registrationTimestamp = System.currentTimeMillis();
         lastUpdateTimestamp = registrationTimestamp;
+        // ???
         duration = (durationInSecs * 1000);
 
     }
@@ -60,6 +61,7 @@ public class Lease<T> {
      * {@link #DEFAULT_DURATION_IN_SECS}.
      */
     public void renew() {
+        // 续约
         lastUpdateTimestamp = System.currentTimeMillis() + duration;
 
     }
@@ -68,6 +70,7 @@ public class Lease<T> {
      * Cancels the lease by updating the eviction time.
      */
     public void cancel() {
+        // 保存服务实例下线时间戳
         if (evictionTimestamp <= 0) {
             evictionTimestamp = System.currentTimeMillis();
         }

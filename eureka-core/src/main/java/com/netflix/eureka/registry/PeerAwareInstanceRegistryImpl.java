@@ -366,7 +366,7 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
         return Collections.unmodifiableList(peerEurekaNodes.getPeerEurekaNodes());
     }
 
-    /*
+    /**
      * (non-Javadoc)
      *
      * @see com.netflix.eureka.registry.InstanceRegistry#cancel(java.lang.String,
@@ -405,18 +405,20 @@ public class PeerAwareInstanceRegistryImpl extends AbstractInstanceRegistry impl
     public void register(final InstanceInfo info, final boolean isReplication) {
         int leaseDuration = Lease.DEFAULT_DURATION_IN_SECS;
         if (info.getLeaseInfo() != null && info.getLeaseInfo().getDurationInSecs() > 0) {
+            // 根据eureka客户端要求设置续约的时间间隔
             leaseDuration = info.getLeaseInfo().getDurationInSecs();
         }
         super.register(info, leaseDuration, isReplication);
         replicateToPeers(Action.Register, info.getAppName(), info.getId(), info, null, isReplication);
     }
 
-    /*
+    /**
      * (non-Javadoc)
      *
      * @see com.netflix.eureka.registry.InstanceRegistry#renew(java.lang.String,
      * java.lang.String, long, boolean)
      */
+    @Override
     public boolean renew(final String appName, final String id, final boolean isReplication) {
         if (super.renew(appName, id, isReplication)) {
             replicateToPeers(Action.Heartbeat, appName, id, null, null, isReplication);
